@@ -1,0 +1,10 @@
+requests
+beautifulsoup4
+redis
+hiredis
+progressbar2
+websockets
+aioredis
+zstd
+sanic
+orjson
