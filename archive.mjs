@@ -4,11 +4,11 @@ import dateformat from "dateformat";
 import stream from "stream";
 
 import prettyBytes from "pretty-bytes";
-import {compressStream} from "cppzst";
+import { ZSTDCompress } from "simple-zstd";
 import ioredis from "ioredis";
 
 // General
-const MAX_FILE_SIZE = 1024 * 1024 * 1024; // 1GB log files are enough.
+const MAX_FILE_SIZE = 1024 * 1024 * 256; // 256MB log files.
 var running = true;
 
 // Setup Redis.
@@ -24,10 +24,8 @@ let worker = async () => {
     let processed = 0;
 
     // Streams for the file pipeline..
-    let compressor_stream = compressStream({
-        level: 8
-    });
-    let output_file = createWriteStream("output/logs-" + dateformat(new Date(), "yyyy-mm-dd-h-MM-ss") + ".txt.zst");
+    let compressor_stream = ZSTDCompress(8);
+    let output_file = createWriteStream("output/" + Math.floor(new Date().getTime() / 1000) + "-logs-" + dateformat(new Date(), "yyyy-mm-dd-HH-MM-ss") + ".txt.zst");
     let read_stream = new stream.Readable({
         read: async (size) => {
             let bytes_get = 0;
@@ -84,9 +82,13 @@ let worker = async () => {
 
     compressor_stream.on("end", () => {
         console.log("ended compressor");
-        output_file.close();
-        if (!running) process.exit();
+        output_file.end();
     });
+
+    // Exit the process if we are exitting and all writes are complete.
+    output_file.on("finish", () => {
+        if (!running) process.exit();
+    })
 
     // Start the stream.
     console.log("starting pipe to file");

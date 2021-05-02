@@ -8,3 +8,4 @@ aioredis
 zstd
 sanic
 orjson
+python-socketio
