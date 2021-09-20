@@ -1,5 +1,5 @@
 [package]
-name = "beatbeatlarge_rs"
+name = "beatbeatlarge"
 version = "0.1.0"
 edition = "2018"
 
@@ -13,11 +13,6 @@ simdjson-rust = {git = "https://github.com/SunDoge/simdjson-rust"}
 serde_json = "1.0.64"
 rayon = "1.5.1"
 glob = "0.3.0"
-
-[[bin]]
-name = "redis_reader"
-path = "src/redis_reader/main.rs"
-
-[[bin]]
-name = "file_reader"
-path = "src/file_reader/main.rs"
+chrono = "0.4.19"
+influxdb = "0.4.0"
+flate2 = "1.0.20"
