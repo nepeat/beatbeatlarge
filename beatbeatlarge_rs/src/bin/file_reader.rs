@@ -11,12 +11,13 @@ use rayon::prelude::*;
 use influxdb::{Query, Timestamp};
 use influxdb::InfluxDbWriteable;
 use std::convert::TryInto;
+use regex::Regex;
+use lazy_static::lazy_static;
 
 use beatbeatlarge::structs::{BeatContainerMetadata, Message};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
-
 
 fn json_get_str(data: &simdjson_rust::dom::object::Object, key: &str) -> Option<String> {
     match data.at_pointer(key) {
@@ -49,6 +50,13 @@ fn parse_line(data: simdjson_rust::dom::element::Element) -> Result<Message, Box
 }
 
 fn grok_message(data: Message) -> Option<String> {
+    lazy_static! {
+        static ref GROK_REGEXES: [Regex; 3] = [
+            Regex::new(r"^(?P<pipeline_stage>Starting|Failed|Finished) (?P<pipeline_task>\w+) for Item").unwrap(),
+            Regex::new(r"^\d+=(?P<status_code>\d+) ").unwrap(),
+            Regex::new(r"sent (?P<rsync_sent>[\d,]+) bytes\s\sreceived (?P<rsync_received>[\d,]+) bytes\s\s(?P<rsync_throughput>[\d,\.]+) bytes\/sec").unwrap()
+        ];
+    }
     let mut query = influxdb::Timestamp::Milliseconds(data.timestamp.timestamp_millis().try_into().unwrap())
         .into_query("metric")
         .add_tag("host", data.hostname);
@@ -75,13 +83,37 @@ fn grok_message(data: Message) -> Option<String> {
         None => ()
     };
 
-    query = query.add_field("action", "fart");
+    // grok magics
+    let mut got_capture = false;
 
-    if data.message.contains("drive") {
+    for grok_r in GROK_REGEXES.iter() {
+        match grok_r.captures(&data.message) {
+            Some(caps) => {
+                for _cap_name in grok_r.capture_names() {
+                    match _cap_name {
+                        Some(cap_name) => {
+                            query = query.add_field(
+                                cap_name,
+                                caps.name(cap_name).unwrap().as_str()
+                            );
+                            got_capture = true;
+                        },
+                        None => {}
+                    }
+                };
+
+                break;
+            },
+            None => {}
+        }
+    };
+
+    if got_capture {
         return Some(query.build().unwrap().get());
+    } else {
+        println!("{}", data.message);
+        return None;
     }
-
-    None
 }
 
 fn files_read_stream(file_path: &std::path::PathBuf) -> std::io::Result<()> {
