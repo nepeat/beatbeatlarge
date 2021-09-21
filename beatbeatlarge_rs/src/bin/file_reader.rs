@@ -20,6 +20,11 @@ use beatbeatlarge::structs::{BeatContainerMetadata, Message};
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+enum CastType {
+    Integer,
+    Number,
+}
+
 fn json_get_str(data: &simdjson_rust::dom::object::Object, key: &str) -> Option<String> {
     match data.at_pointer(key) {
         Ok(value) => Some(value.get_string().unwrap()),
@@ -58,6 +63,13 @@ fn grok_message(data: Message, grok_fields: &HashMap<&str, &str>) -> Option<Stri
             Regex::new(r"sent (?P<rsync_sent>[\d,]+) bytes\s\sreceived (?P<rsync_received>[\d,]+) bytes\s\s(?P<rsync_throughput>[\d,\.]+) bytes").unwrap(),
             Regex::new(r"^(?P<pipeline_stage>Initializing) pipeline for '(?P<pipeline_name>.+)'").unwrap(),
         ];
+
+        static ref GROK_TYPES: HashMap<&'static str, CastType> = hashmap! {
+            "status_code" => CastType::Integer,
+            "rsync_sent" => CastType::Number,
+            "rsync_received" => CastType::Number,
+            "rsync_throughput" => CastType::Number,
+        };
     }
     let mut query = influxdb::Timestamp::Milliseconds(data.timestamp.timestamp_millis().try_into().unwrap())
         .into_query("metric")
@@ -72,10 +84,30 @@ fn grok_message(data: Message, grok_fields: &HashMap<&str, &str>) -> Option<Stri
                 for _cap_name in grok_r.capture_names() {
                     match _cap_name {
                         Some(cap_name) => {
-                            query = query.add_field(
-                                cap_name,
-                                caps.name(cap_name).unwrap().as_str()
-                            );
+                            let cap_value = caps.name(cap_name).unwrap().as_str();
+
+                            if GROK_TYPES.contains_key(cap_name) {
+                                let cap_type = GROK_TYPES.get(cap_name).unwrap();
+                                match cap_type {
+                                    CastType::Integer => {
+                                        query = query.add_field(
+                                            cap_name,
+                                            cap_value.replace(",", "").parse::<i64>().unwrap(),
+                                        );
+                                    },
+                                    CastType::Number => {
+                                        query = query.add_field(
+                                            cap_name,
+                                            cap_value.replace(",", "").parse::<f64>().unwrap(),
+                                        );
+                                    },
+                                }
+                            } else {
+                                query = query.add_field(
+                                    cap_name,
+                                    cap_value,
+                                );
+                            }
                             got_fields = true;
                         },
                         None => {}
@@ -151,7 +183,7 @@ fn files_read_stream(file_path: &std::path::PathBuf) -> std::io::Result<()> {
     let f_out = File::create(
         format!("parsed/{}.influx.gz", file_path.file_name().unwrap().to_str().unwrap().strip_suffix(".txt.zst").unwrap())
     )?;
-    let mut zstd_writer = flate2::write::GzEncoder::new(f_out, flate2::Compression::fast());
+    let mut writer = flate2::write::GzEncoder::new(f_out, flate2::Compression::fast());
 
     // XXX / TODO: hacky grok
     let warrior_actions = hashmap!{
@@ -204,8 +236,8 @@ fn files_read_stream(file_path: &std::path::PathBuf) -> std::io::Result<()> {
         // handle line
         match grok_message(message, &warrior_actions) {
             Some(line) => {
-                zstd_writer.write(line.as_bytes())?;
-                zstd_writer.write(b"\n")?;
+                writer.write_all(line.as_bytes()).unwrap();
+                writer.write_all(b"\n").unwrap();
             }
             None => ()
         };
@@ -220,7 +252,7 @@ fn files_read_stream(file_path: &std::path::PathBuf) -> std::io::Result<()> {
     );
 
     // Cleanup and return
-    zstd_writer.finish().unwrap();
+    writer.finish().unwrap();
     Ok(())
 }
 
