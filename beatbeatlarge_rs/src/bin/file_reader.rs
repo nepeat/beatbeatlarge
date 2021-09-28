@@ -72,53 +72,33 @@ fn grok_message(data: Message, grok_fields: &HashMap<&str, &str>) -> Option<Stri
         };
     }
     let mut query = influxdb::Timestamp::Milliseconds(data.timestamp.timestamp_millis().try_into().unwrap())
-        .into_query("metric")
-        .add_tag("host", data.hostname);
+        .into_query("metric");
 
-    // grok magics
-    let mut got_fields = false;
+    // Find the first grok regex than matches agains the message
+    let first_captures = GROK_REGEXES.iter().find_map(|grok_r| {
+        grok_r
+            .captures(&data.message)
+            // Ignore unnamed groups
+            .zip(Some(grok_r.capture_names().flatten()))
+    });
+    let mut got_fields = first_captures.is_some();
 
-    for grok_r in GROK_REGEXES.iter() {
-        match grok_r.captures(&data.message) {
-            Some(caps) => {
-                for _cap_name in grok_r.capture_names() {
-                    match _cap_name {
-                        Some(cap_name) => {
-                            let cap_value = caps.name(cap_name).unwrap().as_str();
+    if let Some((caps, cap_names)) = first_captures {
+        for cap_name in cap_names {
+            let cap_value = &caps[cap_name];
 
-                            if GROK_TYPES.contains_key(cap_name) {
-                                let cap_type = GROK_TYPES.get(cap_name).unwrap();
-                                match cap_type {
-                                    CastType::Integer => {
-                                        query = query.add_field(
-                                            cap_name,
-                                            cap_value.replace(",", "").parse::<i64>().unwrap(),
-                                        );
-                                    },
-                                    CastType::Number => {
-                                        query = query.add_field(
-                                            cap_name,
-                                            cap_value.replace(",", "").parse::<f64>().unwrap(),
-                                        );
-                                    },
-                                }
-                            } else {
-                                query = query.add_field(
-                                    cap_name,
-                                    cap_value,
-                                );
-                            }
-                            got_fields = true;
-                        },
-                        None => {}
-                    }
+            query =
+                match GROK_TYPES.get(cap_name) {
+                    Some(CastType::Integer) => query
+                        .add_field(cap_name, cap_value.replace(",", "").parse::<i64>().unwrap()),
+
+                    Some(CastType::Number) => query
+                        .add_field(cap_name, cap_value.replace(",", "").parse::<f64>().unwrap()),
+
+                    None => query.add_field(cap_name, cap_value),
                 };
-
-                break;
-            },
-            None => {}
         }
-    };
+    }
 
     // static line bs
     for (action_text, action) in grok_fields.into_iter() {
@@ -128,6 +108,14 @@ fn grok_message(data: Message, grok_fields: &HashMap<&str, &str>) -> Option<Stri
             break;
         }
     }
+
+    // Stop if we do not have fields.
+    if !got_fields {
+        return None;
+    }
+
+    // Add the hostname.
+    query = query.add_tag("host", data.hostname);
 
     // Add container name and image if given.
     match data.container {
@@ -155,11 +143,7 @@ fn grok_message(data: Message, grok_fields: &HashMap<&str, &str>) -> Option<Stri
         None => ()
     };
 
-    if got_fields {
-        return Some(query.build().unwrap().get());
-    } else {
-        return None;
-    }
+    Some(query.build().unwrap().get())
 }
 
 fn files_read_stream(file_path: &std::path::PathBuf) -> std::io::Result<()> {
