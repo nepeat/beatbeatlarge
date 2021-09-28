@@ -1,2 +1,10 @@
 [build]
 rustflags = ["-C", "target-cpu=native"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[dependencies.regex]
+default-features = false
+features = ["std", "perf"]
